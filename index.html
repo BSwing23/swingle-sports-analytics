@@ -110,6 +110,19 @@
     transition:opacity .2s;
   }
   .nav-links a:hover{opacity:1;}
+  .nav-links a.nav-cta{
+    opacity:1;
+    background:var(--vb-yellow);
+    color:var(--ink);
+    padding:8px 16px;
+    border-radius:999px;
+    font-weight:600;
+    transition:transform .18s ease, background .18s ease;
+  }
+  .nav-links a.nav-cta:hover{
+    transform:translateY(-2px);
+    background:#c3e6f8;
+  }
   @media (max-width:780px){
     .nav-links{display:none;}
   }
@@ -722,9 +735,9 @@
       <a href="#gasa">Z2 · GASA</a>
       <a href="#sos">Z3 · Side or Serve</a>
       <a href="#detective">Z4 · Point Detective</a>
-      <a href="tournament-manager.html">Tournament Tracker</a>
-      <a href="#soon">Z5 · Coming Soon</a>
+      <a href="#soon">Z5 · Articles</a>
       <a href="#founder">Z6 · Founder</a>
+      <a href="tournament-manager.html" class="nav-cta">Tournament Tracker</a>
     </div>
   </div>
 </nav>
