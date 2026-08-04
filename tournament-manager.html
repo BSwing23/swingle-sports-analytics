@@ -1257,7 +1257,7 @@ function viewBjerringActive(t){
     <div class="round-head"><h2>Round ${t.round}</h2><span class="rtag">Bjerring · team size ${t.teamSize}</span></div>
     ${sitOutNames.length ? `<div class="sitout-note">Sitting out this round: ${esc(sitOutNames.join(', '))}</div>` : ''}
     ${matches}
-    <button class="btn btn-primary btn-block" id="submitBjerringRound" style="margin-top:8px;">Submit results & shuffle next round</button>
+    <button class="btn btn-primary btn-block" id="submitBjerringRound" style="margin-top:8px;">Submit results and begin the next round</button>
     <h3 style="margin-top:36px; font-size:17px;">Standings</h3>
     ${standingsTableHtml(bjerringStandingsSorted(t).map(r=>({name:r.name,wins:r.wins,losses:r.losses,diff:r.diff})), 'Player')}
     <h3 style="margin-top:36px; font-size:17px;">Partner matrix</h3>
