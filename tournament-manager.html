@@ -236,12 +236,19 @@
   table.matrix-table thead th{
     background:rgba(43,77,105,0.35); color:var(--chalk-dim); font-weight:600; text-transform:uppercase; letter-spacing:0.04em;
   }
+  table.matrix-table thead th.mx-colhead{
+    padding:10px 6px; vertical-align:bottom;
+  }
+  table.matrix-table thead th.mx-colhead span{
+    writing-mode:vertical-rl; transform:rotate(180deg); white-space:nowrap; display:inline-block;
+  }
   table.matrix-table tbody th{
     text-align:left; background:rgba(43,77,105,0.35); color:var(--chalk); font-weight:600; position:sticky; left:0;
   }
   table.matrix-table td.mx-self{color:var(--chalk-dim); background:rgba(255,255,255,0.03);}
-  table.matrix-table td.mx-1{background:rgba(154,209,240,0.18); color:var(--chalk);}
-  table.matrix-table td.mx-2plus{background:rgba(154,209,240,0.4); color:var(--ink); font-weight:700;}
+  table.matrix-table td.mx-pos{background:rgba(111,207,151,0.18); color:var(--win-green); font-weight:700;}
+  table.matrix-table td.mx-neg{background:rgba(224,119,109,0.18); color:var(--loss-red); font-weight:700;}
+  table.matrix-table td.mx-zero{background:rgba(154,209,240,0.18); color:var(--chalk);}
 
   .champion-banner{
     text-align:center; padding:44px 24px; border:1px solid var(--vb-yellow); border-radius:var(--radius);
@@ -1350,7 +1357,7 @@ function viewBjerringActive(t){
     <h3 style="margin-top:36px; font-size:17px;">Standings</h3>
     ${standingsTableHtml(bjerringStandingsSorted(t).map(r=>({name:r.name,wins:r.wins,losses:r.losses,diff:r.diff})), 'Player')}
     <h3 style="margin-top:36px; font-size:17px;">Partner matrix</h3>
-    <p class="hint" style="margin-bottom:4px;">Times each pair has been teammates. Blank means they haven't partnered yet.</p>
+    <p class="hint" style="margin-bottom:4px;">Point differential when each pair has played as teammates. Blank means they haven't partnered yet.</p>
     ${bjerringMatrixHtml(t)}
   `;
 }
@@ -1362,18 +1369,36 @@ function playerNameFromList(list, id){
 function initials(name){
   return name.split(/\s+/).map(w=>w[0]).join('').slice(0,3).toUpperCase();
 }
+function partnerScoreDiff(t, aId, bId){
+  let diff = 0;
+  (t.history || []).forEach(entry => {
+    entry.teams.forEach((team, teamIdx) => {
+      if(!team.includes(aId) || !team.includes(bId)) return;
+      const matchIdx = entry.pairs.findIndex(p => p[0] === teamIdx || p[1] === teamIdx);
+      if(matchIdx === -1) return;
+      const score = entry.scores[matchIdx];
+      if(!score) return;
+      const sA = Number(score.scoreA), sB = Number(score.scoreB);
+      diff += (entry.pairs[matchIdx][0] === teamIdx) ? (sA - sB) : (sB - sA);
+    });
+  });
+  return diff;
+}
 function bjerringMatrixHtml(t){
   const players = t.players;
   const rows = players.map(rowP => {
     const cells = players.map(colP => {
       if(rowP.id === colP.id) return `<td class="mx-self">—</td>`;
       const c = getCount(t.partnerCounts, rowP.id, colP.id);
-      const cls = c === 0 ? '' : (c === 1 ? 'mx-1' : 'mx-2plus');
-      return `<td class="${cls}">${c || ''}</td>`;
+      if(c === 0) return `<td></td>`;
+      const diff = partnerScoreDiff(t, rowP.id, colP.id);
+      const cls = diff > 0 ? 'mx-pos' : (diff < 0 ? 'mx-neg' : 'mx-zero');
+      const label = diff > 0 ? `+${diff}` : `${diff}`;
+      return `<td class="${cls}">${label}</td>`;
     }).join('');
     return `<tr><th title="${esc(rowP.name)}">${esc(rowP.name)}</th>${cells}</tr>`;
   }).join('');
-  const headerCells = players.map(p => `<th class="mx-colhead" title="${esc(p.name)}">${esc(initials(p.name))}</th>`).join('');
+  const headerCells = players.map(p => `<th class="mx-colhead" title="${esc(p.name)}"><span>${esc(p.name)}</span></th>`).join('');
   return `
     <div class="matrix-wrap">
       <table class="matrix-table">
@@ -1961,7 +1986,9 @@ function printMatrixTable(t){
     const cells = players.map(colP => {
       if(rowP.id === colP.id) return `<td style="color:#ccc;">—</td>`;
       const c = getCount(t.partnerCounts, rowP.id, colP.id);
-      return `<td style="${c>0?'font-weight:700;':''}">${c || ''}</td>`;
+      if(c === 0) return `<td></td>`;
+      const diff = partnerScoreDiff(t, rowP.id, colP.id);
+      return `<td style="font-weight:700;">${diff > 0 ? '+' : ''}${diff}</td>`;
     }).join('');
     return `<tr><th style="text-align:left;">${esc(rowP.name)}</th>${cells}</tr>`;
   }).join('');
