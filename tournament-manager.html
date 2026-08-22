@@ -805,6 +805,69 @@ function doubleElimSubmitReset(t, score){
   t.status = 'complete';
 }
 
+/* ---- Round count prediction ----
+   Rather than a separate formula that could drift out of sync with the real
+   engine, this runs the actual creator/submit functions on a throwaway set
+   of dummy entrants with deterministic auto-picked results, and just counts
+   how many rounds it took. Guaranteed to match real play exactly, since
+   it's the same code path a real tournament uses. */
+function predictRounds(format, entrantCount, teamSize){
+  const dummyEntrants = Array.from({length: entrantCount}, (_,i) => ({id:'d'+i, name:'D'+i}));
+  const winScore = {scoreA:'21', scoreB:'15'};
+
+  if(format === 'roundrobin'){
+    const t = createRoundRobinTournament(dummyEntrants, null, null);
+    return { rounds: t.schedule.length, exact: true };
+  }
+
+  if(format === 'single'){
+    const t = createSingleElimTournament(dummyEntrants, null, null);
+    let guard = 0;
+    while(t.status !== 'complete' && guard < 30){
+      guard++;
+      const round = t.rounds[t.currentRoundIndex];
+      const scores = round.pairs.map(p => (p[0]===null||p[1]===null) ? null : winScore);
+      singleElimSubmitRound(t, scores);
+    }
+    return { rounds: t.rounds.length, exact: true };
+  }
+
+  if(format === 'double'){
+    const t = createDoubleElimTournament(dummyEntrants, null, null);
+    let guard = 0;
+    let cycles = 0;
+    let sawReset = false;
+    while(t.status !== 'complete' && guard < 40){
+      guard++;
+      if(t.stage === 'grand_final'){
+        cycles++;
+        // Simulate the more likely outcome (winners-bracket side wins straight through).
+        doubleElimSubmitGrandFinal(t, winScore);
+      } else if(t.stage === 'grand_final_reset'){
+        sawReset = true;
+        cycles++;
+        doubleElimSubmitReset(t, winScore);
+      } else {
+        cycles++;
+        let wbScores = [];
+        if(t.stage === 'wb'){
+          wbScores = t.wbRounds[t.wbCurrentIndex].pairs.map(p => (p[0]===null||p[1]===null) ? null : winScore);
+        }
+        let lbScores = [];
+        if(t.lbCurrentPairs && t.lbCurrentPairs.pairs.length){
+          lbScores = t.lbCurrentPairs.pairs.map(() => winScore);
+        }
+        doubleElimSubmitRound(t, wbScores, lbScores);
+      }
+    }
+    // Straight-through path (no reset) is the common case; +1 possible if the
+    // losers-bracket finalist wins game one of the grand final.
+    return { rounds: cycles, exact: false, plusOneIfReset: true };
+  }
+
+  return null;
+}
+
 /* ================= UTIL ================= */
 function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function nameOf(entrant){ return entrant ? entrant.name : ''; }
@@ -952,7 +1015,8 @@ let draftSetup = {
   teamSize: 2,
   seedList: null, // array of entrant objects {id,name} once built
   timerMinutes: '',
-  courts: ''
+  courts: '',
+  totalMinutes: ''
 };
 window.draftSetup = draftSetup;
 
@@ -965,6 +1029,16 @@ const FORMATS = [
 
 function buildSeedListFromPlayers(ids){
   return ids.map(id => { const p = state.roster.find(r=>r.id===id); return { id: p.id, name: p.name }; });
+}
+
+function bjerringTimeEstimateText(){
+  const total = Number(draftSetup.totalMinutes);
+  const perRound = Number(draftSetup.timerMinutes);
+  if(!total || !perRound) return 'Fill in both a timer length and your total available time to see how many rounds fit.';
+  const rounds = Math.floor(total / perRound);
+  if(rounds < 1) return `${perRound} minutes is longer than your ${total}-minute block — shorten the timer.`;
+  const leftover = total - (rounds * perRound);
+  return `≈ ${rounds} round${rounds===1?'':'s'} fit in ${total} minutes at ${perRound} min/round${leftover ? ` (${leftover} min left over)` : ''}.`;
 }
 
 function viewSetup(){
@@ -1005,6 +1079,11 @@ function viewSetup(){
           <label>Courts available (optional)</label>
           <input type="number" id="courtsCount" min="1" placeholder="e.g. 3" value="${draftSetup.courts}">
         </div>
+      </div>
+      <div class="field">
+        <label>Total time you have (minutes, optional)</label>
+        <input type="number" id="totalMinutes" min="0" placeholder="e.g. 50" value="${draftSetup.totalMinutes}">
+        <p class="hint" id="bjTimeEstimate">${bjerringTimeEstimateText()}</p>
       </div>
       <button class="btn btn-primary btn-block" id="startTournament">Start Bjerring tournament</button>
     `;
@@ -1058,11 +1137,21 @@ function viewSetup(){
       </div>
     ` : '';
 
+    let roundCountHtml = '';
+    if(draftSetup.seedList){
+      const pred = predictRounds(draftSetup.format, draftSetup.seedList.length);
+      const label = pred.exact
+        ? `This will take exactly <strong>${pred.rounds} round${pred.rounds===1?'':'s'}</strong>.`
+        : `This will take <strong>${pred.rounds} rounds</strong> if it goes straight through, or ${pred.rounds+1} if there's a bracket reset in the grand final.`;
+      roundCountHtml = `<p class="hint" style="margin-top:10px; color:var(--vb-yellow);">${label}</p>`;
+    }
+
     body = `
       ${entrantModeChoice}
       ${entrantPicker}
       <button type="button" class="btn btn-ghost btn-sm" id="buildEntrants" style="margin-bottom:10px;">Build entrant list</button>
       ${seedListHtml}
+      ${roundCountHtml}
       <div class="inline-fields" style="margin-top:18px;">
         <div class="field">
           <label>Timer per round (minutes, optional)</label>
@@ -1337,7 +1426,7 @@ function viewSingleActive(t){
     return matchRowHtml(idx, a.name, null, b.name, null, false, 'se', court);
   }).join('');
   return `
-    <div class="round-head"><h2>Round ${t.currentRoundIndex+1}</h2><span class="rtag">Single Elimination</span></div>
+    <div class="round-head"><h2>Round ${t.currentRoundIndex+1} of ${predictRounds('single', t.entrants.length).rounds}</h2><span class="rtag">Single Elimination</span></div>
     ${matches}
     <button class="btn btn-primary btn-block" id="submitSERound" style="margin-top:8px;">Submit results</button>
     ${roundHistoryHtml(t.rounds.slice(0, t.currentRoundIndex))}
@@ -1399,8 +1488,10 @@ function viewDoubleActive(t){
     ${t.lbCurrentPairs.pairs.map((pair,idx) => matchRowHtml(idx, pair[0].name, null, pair[1].name, null, false, 'lb', allCourts[courtCursor++])).join('')}
   ` : (t.lbHolding.length <= 1 ? '' : `<div class="bracket-section-title">Losers Bracket</div><p class="hint">Waiting on winners bracket results to continue.</p>`);
 
+  const pred = predictRounds('double', t.entrants.length);
   return `
     <div class="round-head"><h2>In progress</h2><span class="rtag">Double Elimination</span></div>
+    <p class="hint" style="margin-bottom:16px;">Expect about ${pred.rounds} rounds total if it goes straight through, ${pred.rounds+1} if there's a bracket reset.</p>
     ${wbSection}
     ${lbSection}
     <button class="btn btn-primary btn-block" id="submitDoubleRound" style="margin-top:20px;">Submit round results</button>
@@ -1422,6 +1513,11 @@ function collectScores(prefix, count){
 }
 
 /* ================= EVENT WIRING ================= */
+function updateBjTimeEstimate(){
+  const el = document.getElementById('bjTimeEstimate');
+  if(el) el.textContent = bjerringTimeEstimateText();
+}
+
 function wireEvents(){
   wireTimerEvents();
 
@@ -1523,7 +1619,15 @@ function wireEvents(){
   const entrantTeamSize = document.getElementById('entrantTeamSize');
   if(entrantTeamSize) entrantTeamSize.addEventListener('change', () => { draftSetup.teamSize = Number(entrantTeamSize.value); });
   const timerInput = document.getElementById('timerMinutes');
-  if(timerInput) timerInput.addEventListener('change', () => { draftSetup.timerMinutes = timerInput.value; });
+  if(timerInput) timerInput.addEventListener('input', () => {
+    draftSetup.timerMinutes = timerInput.value;
+    updateBjTimeEstimate();
+  });
+  const totalMinutesInput = document.getElementById('totalMinutes');
+  if(totalMinutesInput) totalMinutesInput.addEventListener('input', () => {
+    draftSetup.totalMinutes = totalMinutesInput.value;
+    updateBjTimeEstimate();
+  });
   const courtsInput = document.getElementById('courtsCount');
   if(courtsInput) courtsInput.addEventListener('change', () => { draftSetup.courts = courtsInput.value; });
 
@@ -1578,7 +1682,7 @@ function wireEvents(){
       state.tournament = createDoubleElimTournament(draftSetup.seedList, minutes, courts);
     }
     persistTournament();
-    Object.assign(draftSetup, { format:null, entrantMode:'players', selectedPlayerIds:new Set(), seenPlayerIds:new Set(), teamSize:2, seedList:null, timerMinutes:'', courts:'' });
+    Object.assign(draftSetup, { format:null, entrantMode:'players', selectedPlayerIds:new Set(), seenPlayerIds:new Set(), teamSize:2, seedList:null, timerMinutes:'', courts:'', totalMinutes:'' });
     setView('active');
   });
 
