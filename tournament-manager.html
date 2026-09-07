@@ -164,6 +164,26 @@
   .seed-row button{background:none; border:1px solid var(--line-strong); color:var(--chalk-dim); border-radius:4px; padding:3px 8px; font-size:12px;}
   .seed-row button:hover{color:var(--vb-yellow); border-color:var(--vb-yellow);}
 
+  .pool-tags{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;}
+  .pool-tag{
+    display:flex; align-items:center; gap:6px; padding:6px 12px;
+    border:1px solid var(--line-strong); border-radius:999px;
+    font-size:12px; font-family:'JetBrains Mono',monospace; text-transform:uppercase; letter-spacing:0.04em;
+  }
+  .pool-tag button{background:none; border:none; color:var(--chalk-dim); cursor:pointer; font-size:14px; line-height:1; padding:0;}
+  .pool-tag button:hover{color:var(--loss-red);}
+  .pool-add-row{display:flex; gap:8px; margin-bottom:16px;}
+  .pool-add-row input{flex:1;}
+  .pool-row{
+    display:flex; align-items:center; gap:10px; padding:8px 12px;
+    border:1px solid var(--line); border-radius:6px; margin-bottom:6px;
+  }
+  .pool-row .pname{flex:1; font-size:14px;}
+  .pool-row select{
+    padding:7px 9px; border-radius:6px; border:1px solid var(--line-strong);
+    background:rgba(255,255,255,0.03); color:var(--chalk); font-size:13px;
+  }
+
   .timer-widget{
     display:flex; align-items:center; gap:16px; padding:16px 20px;
     border:1px solid var(--line-strong); border-radius:var(--radius);
@@ -515,6 +535,48 @@ function makeBalancedTeams(activePlayers, teamSize, partnerCounts, budgetMs){
   search(shuffle(activePlayers), [], 0);
   return bestTeams || [];
 }
+/* ---- Position pools: teams drawn one-per-pool (e.g. one Blocker + one
+   Defender) instead of any combination. Pools are merged pairwise -- match
+   pool 0 to pool 1 minimizing repeat-partner cost, then match those pairs
+   to pool 2, and so on -- using the same bounded backtracking search as the
+   rest of the scheduler. All pools passed in must already be the same
+   length (see chooseSitOutsFromPools). */
+function matchUnitsToPool(units, poolIds, partnerCounts, budgetMs){
+  if(units.length === 0) return [];
+  const deadline = Date.now() + budgetMs;
+  let best=null, bestCost=Infinity;
+  function search(remainingUnitIdxs, remainingPoolIds, assignment, costSoFar){
+    if(Date.now() > deadline || costSoFar >= bestCost) return;
+    if(remainingUnitIdxs.length === 0){
+      if(costSoFar < bestCost){ bestCost = costSoFar; best = assignment.slice(); }
+      return;
+    }
+    const ui = remainingUnitIdxs[0];
+    const restUnits = remainingUnitIdxs.slice(1);
+    for(const pid of shuffle(remainingPoolIds)){
+      if(Date.now() > deadline) return;
+      let cost = 0;
+      units[ui].forEach(member => cost += getCount(partnerCounts, member, pid));
+      if(costSoFar + cost >= bestCost) continue;
+      search(restUnits, remainingPoolIds.filter(x=>x!==pid), assignment.concat([{unitIdx:ui, pid:pid}]), costSoFar+cost);
+      if(bestCost === 0) return;
+    }
+  }
+  search(units.map((_,i)=>i), poolIds.slice(), [], 0);
+  return best || [];
+}
+function makeBalancedTeamsFromPools(pools, partnerCounts, budgetMs){
+  if(pools.length === 0) return [];
+  let units = shuffle(pools[0]).map(id => [id]);
+  const perStepBudget = Math.max(80, Math.floor(budgetMs / Math.max(1, pools.length-1)));
+  for(let p=1; p<pools.length; p++){
+    const assignment = matchUnitsToPool(units, pools[p], partnerCounts, perStepBudget);
+    const newUnits = units.map(u => u.slice());
+    assignment.forEach(a => { newUnits[a.unitIdx].push(a.pid); });
+    units = newUnits;
+  }
+  return units;
+}
 function pairTeamsBalanced(teamIdxs, teams, opponentCounts, budgetMs){
   if(teamIdxs.length === 0) return { pairs: [], sitOut: null };
   const deadline = Date.now() + budgetMs;
@@ -540,16 +602,44 @@ function pairTeamsBalanced(teamIdxs, teams, opponentCounts, budgetMs){
   return best;
 }
 
+// When position pools are active, each pool contributes an equal number of
+// active players each round (trimmed to the smallest pool's size), so teams
+// can always be built one-per-pool. Excess players in larger pools sit out,
+// rotated fairly via the same sitOutCounts fairness used everywhere else.
+function chooseSitOutsFromPools(pools, sitOutCounts){
+  const poolNames = Object.keys(pools);
+  const minSize = Math.min(...poolNames.map(pn => pools[pn].length));
+  const activePools = [];
+  let sitOuts = [];
+  poolNames.forEach(pn => {
+    const ids = pools[pn];
+    const excess = ids.length - minSize;
+    const result = chooseSitOuts(ids, excess, sitOutCounts);
+    activePools.push(result.active);
+    sitOuts = sitOuts.concat(result.sitOuts);
+  });
+  return { activePools, sitOuts };
+}
+
 // Builds one round: picks sit-outs, forms balanced teams, pairs them into matches,
 // and updates the running partner/opponent/sitout history used by future rounds.
 function buildBjerringRound(t){
-  const allIds = t.players.map(p=>p.id);
-  const remainder = allIds.length % t.teamSize;
-  const sitOutResult = chooseSitOuts(allIds, remainder, t.sitOutCounts);
-  const active = sitOutResult.active, sitOuts = sitOutResult.sitOuts;
-  sitOuts.forEach(pid => { t.sitOutCounts[pid] = (t.sitOutCounts[pid]||0) + 1; });
+  let active, sitOuts, teams;
+  if(t.pools){
+    const poolResult = chooseSitOutsFromPools(t.pools, t.sitOutCounts);
+    sitOuts = poolResult.sitOuts;
+    sitOuts.forEach(pid => { t.sitOutCounts[pid] = (t.sitOutCounts[pid]||0) + 1; });
+    teams = makeBalancedTeamsFromPools(poolResult.activePools, t.partnerCounts, 400);
+    active = poolResult.activePools.flat();
+  } else {
+    const allIds = t.players.map(p=>p.id);
+    const remainder = allIds.length % t.teamSize;
+    const sitOutResult = chooseSitOuts(allIds, remainder, t.sitOutCounts);
+    active = sitOutResult.active; sitOuts = sitOutResult.sitOuts;
+    sitOuts.forEach(pid => { t.sitOutCounts[pid] = (t.sitOutCounts[pid]||0) + 1; });
+    teams = makeBalancedTeams(active, t.teamSize, t.partnerCounts, 400);
+  }
 
-  const teams = makeBalancedTeams(active, t.teamSize, t.partnerCounts, 400);
   teams.forEach(team => {
     for(let i=0;i<team.length;i++) for(let j=i+1;j<team.length;j++) incCount(t.partnerCounts, team[i], team[j]);
   });
@@ -577,7 +667,7 @@ function assignCourts(matchCount, courts){
   return Array.from({length: matchCount}, (_,i) => (i % courts) + 1);
 }
 
-function createBjerringTournament(players, teamSize, timerMinutes, courts){
+function createBjerringTournament(players, teamSize, timerMinutes, courts, pools){
   const standings = {};
   players.forEach(p => { standings[p.id] = { name: p.name, wins:0, losses:0, diff:0 }; });
   const t = {
@@ -593,7 +683,8 @@ function createBjerringTournament(players, teamSize, timerMinutes, courts){
     sitOutCounts: {},
     standings,
     history: [],
-    status: 'in_progress'
+    status: 'in_progress',
+    pools: pools || null
   };
   const built = buildBjerringRound(t);
   t.currentTeams = built.teams;
@@ -1023,7 +1114,10 @@ let draftSetup = {
   seedList: null, // array of entrant objects {id,name} once built
   timerMinutes: '',
   courts: '',
-  totalMinutes: ''
+  totalMinutes: '',
+  usePools: false, // Bjerring only: draft teams one-per-pool (e.g. Blockers + Defenders)
+  poolNames: ['Blockers', 'Defenders'],
+  playerPools: {} // playerId -> pool name
 };
 window.draftSetup = draftSetup;
 
@@ -1065,19 +1159,65 @@ function viewSetup(){
         <input type="checkbox" data-bj-check="${p.id}" ${draftSetup.selectedPlayerIds.has(p.id)?'checked':''}>
         <span>${esc(p.name)}</span>
       </label>`).join('');
+
+    const selectedIds = Array.from(draftSetup.selectedPlayerIds);
+
+    const poolTags = draftSetup.poolNames.map((pn,i) => `
+      <span class="pool-tag">${esc(pn)}${draftSetup.poolNames.length>2 ? `<button type="button" data-remove-pool="${i}" title="Remove pool">×</button>` : ''}</span>
+    `).join('');
+
+    const poolAssignRows = selectedIds.map(id => {
+      const p = state.roster.find(r=>r.id===id);
+      const current = draftSetup.playerPools[id] || '';
+      const options = `<option value="">Unassigned</option>` + draftSetup.poolNames.map(pn => `<option value="${esc(pn)}" ${current===pn?'selected':''}>${esc(pn)}</option>`).join('');
+      return `
+        <label class="pool-row">
+          <span class="pname">${esc(p ? p.name : '?')}</span>
+          <select data-pool-assign="${id}">${options}</select>
+        </label>
+      `;
+    }).join('');
+
+    const poolsSection = draftSetup.usePools ? `
+      <div class="field">
+        <label>Position pools</label>
+        <p class="hint" style="margin-bottom:10px;">Teams are formed with exactly one player from each pool — e.g. one Blocker + one Defender. Assign every selected player below; unequal pool sizes just mean the larger pool rotates sit-outs.</p>
+        <div class="pool-tags">${poolTags}</div>
+        <div class="pool-add-row">
+          <input type="text" id="newPoolName" placeholder="New pool name, e.g. Setters">
+          <button type="button" class="btn btn-ghost btn-sm" id="addPoolName">Add pool</button>
+        </div>
+        ${selectedIds.length ? poolAssignRows : '<p class="hint">Select players above first.</p>'}
+      </div>
+    ` : '';
+
+    const teamSizeField = draftSetup.usePools ? `
+      <div class="field">
+        <label>Team size</label>
+        <p class="hint" style="margin-top:9px;">${draftSetup.poolNames.length} (one from each pool)</p>
+      </div>
+    ` : `
+      <div class="field">
+        <label>Team size</label>
+        <select id="bjTeamSize">
+          <option value="2" ${draftSetup.teamSize===2?'selected':''}>2 (doubles)</option>
+          <option value="3" ${draftSetup.teamSize===3?'selected':''}>3 (triples)</option>
+        </select>
+      </div>
+    `;
+
     body = `
       <div class="field">
         <label>Players in this session</label>
         ${checks || '<p class="hint">Add players on the Roster tab first.</p>'}
       </div>
+      <label class="checkbox-row" style="margin-top:4px;">
+        <input type="checkbox" id="usePoolsToggle" ${draftSetup.usePools?'checked':''}>
+        <span>Use position pools (e.g. Blockers only play with Defenders)</span>
+      </label>
+      ${poolsSection}
       <div class="inline-fields">
-        <div class="field">
-          <label>Team size</label>
-          <select id="bjTeamSize">
-            <option value="2" ${draftSetup.teamSize===2?'selected':''}>2 (doubles)</option>
-            <option value="3" ${draftSetup.teamSize===3?'selected':''}>3 (triples)</option>
-          </select>
-        </div>
+        ${teamSizeField}
         <div class="field">
           <label>Timer per round (minutes, optional)</label>
           <input type="number" id="timerMinutes" min="0" placeholder="e.g. 4" value="${draftSetup.timerMinutes}">
@@ -1349,8 +1489,9 @@ function viewBjerringActive(t){
     const teamB = t.currentTeams[bi].map(pid=>playerNameFromList(t.players,pid)).join(' & ');
     return matchRowHtml(idx, teamA, null, teamB, null, false, 'bj', bjCourts[idx]);
   }).join('');
+  const bjFormatTag = t.pools ? `Bjerring · ${esc(Object.keys(t.pools).join(' + '))}` : `Bjerring · team size ${t.teamSize}`;
   return `
-    <div class="round-head"><h2>Round ${t.round}</h2><span class="rtag">Bjerring · team size ${t.teamSize}</span></div>
+    <div class="round-head"><h2>Round ${t.round}</h2><span class="rtag">${bjFormatTag}</span></div>
     ${sitOutNames.length ? `<div class="sitout-note">Sitting out this round: ${esc(sitOutNames.join(', '))}</div>` : ''}
     ${matches}
     <button class="btn btn-primary btn-block" id="submitBjerringRound" style="margin-top:8px;">Submit results and begin the next round</button>
@@ -1629,6 +1770,33 @@ function wireEvents(){
     cb.addEventListener('change', () => {
       const id = cb.getAttribute('data-bj-check');
       if(cb.checked) draftSetup.selectedPlayerIds.add(id); else draftSetup.selectedPlayerIds.delete(id);
+      if(draftSetup.usePools) render();
+    });
+  });
+  const usePoolsToggle = document.getElementById('usePoolsToggle');
+  if(usePoolsToggle) usePoolsToggle.addEventListener('change', () => { draftSetup.usePools = usePoolsToggle.checked; render(); });
+  const addPoolBtn = document.getElementById('addPoolName');
+  if(addPoolBtn) addPoolBtn.addEventListener('click', () => {
+    const input = document.getElementById('newPoolName');
+    const name = input.value.trim();
+    if(!name) return;
+    if(draftSetup.poolNames.includes(name)){ alert('That pool name already exists.'); return; }
+    draftSetup.poolNames.push(name);
+    render();
+  });
+  document.querySelectorAll('[data-remove-pool]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.getAttribute('data-remove-pool'));
+      const removed = draftSetup.poolNames[i];
+      draftSetup.poolNames.splice(i,1);
+      Object.keys(draftSetup.playerPools).forEach(id => { if(draftSetup.playerPools[id]===removed) delete draftSetup.playerPools[id]; });
+      render();
+    });
+  });
+  document.querySelectorAll('[data-pool-assign]').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const id = sel.getAttribute('data-pool-assign');
+      if(sel.value) draftSetup.playerPools[id] = sel.value; else delete draftSetup.playerPools[id];
     });
   });
   document.querySelectorAll('[data-en-check]').forEach(cb => {
@@ -1696,9 +1864,26 @@ function wireEvents(){
 
     if(draftSetup.format === 'bjerring'){
       const ids = Array.from(draftSetup.selectedPlayerIds);
-      if(ids.length < draftSetup.teamSize * 2){ alert('Not enough players selected for at least 2 teams.'); return; }
-      const players = buildSeedListFromPlayers(ids);
-      state.tournament = createBjerringTournament(players, draftSetup.teamSize, minutes, courts);
+      if(draftSetup.usePools){
+        const poolsMap = {};
+        draftSetup.poolNames.forEach(pn => { poolsMap[pn] = []; });
+        const unassigned = [];
+        ids.forEach(id => {
+          const pn = draftSetup.playerPools[id];
+          if(pn && poolsMap[pn]) poolsMap[pn].push(id); else unassigned.push(id);
+        });
+        if(unassigned.length){ alert(`Assign every selected player to a pool first (${unassigned.length} unassigned).`); return; }
+        const nonEmptyPoolNames = Object.keys(poolsMap).filter(pn => poolsMap[pn].length > 0);
+        if(nonEmptyPoolNames.length < 2){ alert('Add at least 2 pools and put players in each.'); return; }
+        const pools = {};
+        nonEmptyPoolNames.forEach(pn => { pools[pn] = poolsMap[pn]; });
+        const players = buildSeedListFromPlayers(ids);
+        state.tournament = createBjerringTournament(players, nonEmptyPoolNames.length, minutes, courts, pools);
+      } else {
+        if(ids.length < draftSetup.teamSize * 2){ alert('Not enough players selected for at least 2 teams.'); return; }
+        const players = buildSeedListFromPlayers(ids);
+        state.tournament = createBjerringTournament(players, draftSetup.teamSize, minutes, courts);
+      }
     } else if(draftSetup.format === 'roundrobin'){
       state.tournament = createRoundRobinTournament(draftSetup.seedList, minutes, courts);
     } else if(draftSetup.format === 'single'){
@@ -1707,7 +1892,7 @@ function wireEvents(){
       state.tournament = createDoubleElimTournament(draftSetup.seedList, minutes, courts);
     }
     persistTournament();
-    Object.assign(draftSetup, { format:null, entrantMode:'players', selectedPlayerIds:new Set(), seenPlayerIds:new Set(), teamSize:2, seedList:null, timerMinutes:'', courts:'', totalMinutes:'' });
+    Object.assign(draftSetup, { format:null, entrantMode:'players', selectedPlayerIds:new Set(), seenPlayerIds:new Set(), teamSize:2, seedList:null, timerMinutes:'', courts:'', totalMinutes:'', usePools:false, poolNames:['Blockers','Defenders'], playerPools:{} });
     setView('active');
   });
 
@@ -1969,8 +2154,9 @@ function buildPrintBjerring(t){
       rounds += `<div class="print-bye">Sat out: ${h.sitOut.map(pid=>esc(playerNameFromList(t.players,pid))).join(', ')}</div>`;
     }
   });
+  const bjPrintSub = t.pools ? `${Object.keys(t.pools).join(' + ')} · ${t.players.length} players · through round ${t.round-1}` : `Team size ${t.teamSize} · ${t.players.length} players · through round ${t.round-1}`;
   return `
-    ${printHeaderHtml('Bjerring Tournament', `Team size ${t.teamSize} · ${t.players.length} players · through round ${t.round-1}`)}
+    ${printHeaderHtml('Bjerring Tournament', bjPrintSub)}
     <div class="print-section-title">Standings</div>
     ${printStandingsTable(standings, 'Player')}
     <div class="print-section-title">Partner matrix</div>
