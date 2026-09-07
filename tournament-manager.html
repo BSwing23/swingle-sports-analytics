@@ -535,8 +535,9 @@ function makeBalancedTeams(activePlayers, teamSize, partnerCounts, budgetMs){
   search(shuffle(activePlayers), [], 0);
   return bestTeams || [];
 }
-/* ---- Position pools: teams drawn one-per-pool (e.g. one Blocker + one
-   Defender) instead of any combination. Pools are merged pairwise -- match
+/* ---- Pools: teams drawn one-per-pool (e.g. one Blocker + one Defender, or
+   one top-half player + one bottom-half player by skill) instead of any
+   combination. Pools are merged pairwise -- match
    pool 0 to pool 1 minimizing repeat-partner cost, then match those pairs
    to pool 2, and so on -- using the same bounded backtracking search as the
    rest of the scheduler. All pools passed in must already be the same
@@ -602,7 +603,7 @@ function pairTeamsBalanced(teamIdxs, teams, opponentCounts, budgetMs){
   return best;
 }
 
-// When position pools are active, each pool contributes an equal number of
+// When pools are active, each pool contributes an equal number of
 // active players each round (trimmed to the smallest pool's size), so teams
 // can always be built one-per-pool. Excess players in larger pools sit out,
 // rotated fairly via the same sitOutCounts fairness used everywhere else.
@@ -1116,7 +1117,7 @@ let draftSetup = {
   courts: '',
   totalMinutes: '',
   usePools: false, // Bjerring only: draft teams one-per-pool (e.g. Blockers + Defenders)
-  poolNames: ['Blockers', 'Defenders'],
+  poolNames: ['Pool A', 'Pool B'],
   playerPools: {} // playerId -> pool name
 };
 window.draftSetup = draftSetup;
@@ -1180,8 +1181,8 @@ function viewSetup(){
 
     const poolsSection = draftSetup.usePools ? `
       <div class="field">
-        <label>Position pools</label>
-        <p class="hint" style="margin-bottom:10px;">Teams are formed with exactly one player from each pool — e.g. one Blocker + one Defender. Assign every selected player below; unequal pool sizes just mean the larger pool rotates sit-outs.</p>
+        <label>Pools</label>
+        <p class="hint" style="margin-bottom:10px;">Teams are formed with exactly one player from each pool — e.g. a Blocker with a Defender, or a top-skill player with a bottom-skill player. Assign every selected player below; unequal pool sizes just mean the larger pool rotates sit-outs.</p>
         <div class="pool-tags">${poolTags}</div>
         <div class="pool-add-row">
           <input type="text" id="newPoolName" placeholder="New pool name, e.g. Setters">
@@ -1213,7 +1214,7 @@ function viewSetup(){
       </div>
       <label class="checkbox-row" style="margin-top:4px;">
         <input type="checkbox" id="usePoolsToggle" ${draftSetup.usePools?'checked':''}>
-        <span>Use position pools (e.g. Blockers only play with Defenders)</span>
+        <span>Use pools to control who's teamed together (e.g. skill level, position)</span>
       </label>
       ${poolsSection}
       <div class="inline-fields">
@@ -1241,6 +1242,7 @@ function viewSetup(){
         <select id="entrantMode">
           <option value="players" ${draftSetup.entrantMode==='players'?'selected':''}>Individual players from roster</option>
           <option value="teams" ${draftSetup.entrantMode==='teams'?'selected':''}>Random teams (set size below)</option>
+          <option value="pools" ${draftSetup.entrantMode==='pools'?'selected':''}>Teams from pools (e.g. skill level, position)</option>
         </select>
       </div>
     `;
@@ -1253,6 +1255,32 @@ function viewSetup(){
           <span>${esc(p.name)}</span>
         </label>`).join('');
       entrantPicker = `<div class="field"><label>Select players</label>${checks || '<p class="hint">Add players on the Roster tab first.</p>'}</div>`;
+    } else if(draftSetup.entrantMode === 'pools'){
+      const poolTags = draftSetup.poolNames.map((pn,i) => `
+        <span class="pool-tag">${esc(pn)}${draftSetup.poolNames.length>2 ? `<button type="button" data-remove-pool="${i}" title="Remove pool">×</button>` : ''}</span>
+      `).join('');
+      const poolAssignRows = state.roster.map(p => {
+        const current = draftSetup.playerPools[p.id] || '';
+        const options = `<option value="">Unassigned</option>` + draftSetup.poolNames.map(pn => `<option value="${esc(pn)}" ${current===pn?'selected':''}>${esc(pn)}</option>`).join('');
+        return `
+          <label class="pool-row">
+            <span class="pname">${esc(p.name)}</span>
+            <select data-pool-assign="${p.id}">${options}</select>
+          </label>
+        `;
+      }).join('');
+      entrantPicker = `
+        <div class="field">
+          <label>Pools</label>
+          <p class="hint" style="margin-bottom:10px;">Each team is built with exactly one player from each pool — e.g. a top-skill player with a bottom-skill player. Assign every roster player below; leftover players from an oversized pool won't be included.</p>
+          <div class="pool-tags">${poolTags}</div>
+          <div class="pool-add-row">
+            <input type="text" id="newPoolName" placeholder="New pool name, e.g. Setters">
+            <button type="button" class="btn btn-ghost btn-sm" id="addPoolName">Add pool</button>
+          </div>
+          ${state.roster.length ? poolAssignRows : '<p class="hint">Add players on the Roster tab first.</p>'}
+        </div>
+      `;
     } else {
       entrantPicker = `
         <div class="field">
@@ -1830,6 +1858,24 @@ function wireEvents(){
       const ids = Array.from(draftSetup.selectedPlayerIds);
       if(ids.length < 2){ alert('Select at least 2 players.'); return; }
       draftSetup.seedList = buildSeedListFromPlayers(shuffle(ids));
+    } else if(draftSetup.entrantMode === 'pools'){
+      const poolsMap = {};
+      draftSetup.poolNames.forEach(pn => { poolsMap[pn] = []; });
+      const unassigned = [];
+      state.roster.forEach(p => {
+        const pn = draftSetup.playerPools[p.id];
+        if(pn && poolsMap[pn]) poolsMap[pn].push(p.id); else unassigned.push(p.id);
+      });
+      if(unassigned.length){ alert(`Assign every roster player to a pool first (${unassigned.length} unassigned).`); return; }
+      const nonEmptyPoolNames = Object.keys(poolsMap).filter(pn => poolsMap[pn].length > 0);
+      if(nonEmptyPoolNames.length < 2){ alert('Add at least 2 pools and put players in each.'); return; }
+      const poolArrays = nonEmptyPoolNames.map(pn => poolsMap[pn]);
+      const minSize = Math.min(...poolArrays.map(a => a.length));
+      const leftover = poolArrays.reduce((sum,a) => sum + (a.length - minSize), 0);
+      if(leftover > 0 && !confirm(`Pool sizes are uneven — ${leftover} player${leftover===1?'':'s'} won't be included in any team. Continue?`)) return;
+      const trimmedPools = poolArrays.map(a => shuffle(a).slice(0, minSize));
+      const teams = makeBalancedTeamsFromPools(trimmedPools, {}, 400);
+      draftSetup.seedList = teams.map((team,i) => ({ id:'team'+i, name: team.map(pid=>playerName(pid)).join(' & ') }));
     } else {
       const allIds = state.roster.map(p=>p.id);
       if(allIds.length < draftSetup.teamSize * 2){ alert('Not enough players for at least 2 teams of that size.'); return; }
@@ -1892,7 +1938,7 @@ function wireEvents(){
       state.tournament = createDoubleElimTournament(draftSetup.seedList, minutes, courts);
     }
     persistTournament();
-    Object.assign(draftSetup, { format:null, entrantMode:'players', selectedPlayerIds:new Set(), seenPlayerIds:new Set(), teamSize:2, seedList:null, timerMinutes:'', courts:'', totalMinutes:'', usePools:false, poolNames:['Blockers','Defenders'], playerPools:{} });
+    Object.assign(draftSetup, { format:null, entrantMode:'players', selectedPlayerIds:new Set(), seenPlayerIds:new Set(), teamSize:2, seedList:null, timerMinutes:'', courts:'', totalMinutes:'', usePools:false, poolNames:['Pool A','Pool B'], playerPools:{} });
     setView('active');
   });
 
