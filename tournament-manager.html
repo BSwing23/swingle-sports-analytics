@@ -172,6 +172,7 @@
   }
   .pool-tag button{background:none; border:none; color:var(--chalk-dim); cursor:pointer; font-size:14px; line-height:1; padding:0;}
   .pool-tag button:hover{color:var(--loss-red);}
+  .pool-tag .pool-count{color:var(--chalk-dim); font-weight:400;}
   .pool-add-row{display:flex; gap:8px; margin-bottom:16px;}
   .pool-add-row input{flex:1;}
   .pool-row{
@@ -1092,6 +1093,27 @@ function playerName(id){
   return p ? p.name : '(removed player)';
 }
 
+/* ---- Pool member counts, kept live as you assign players ---- */
+function poolMemberIdsForCurrentView(){
+  return draftSetup.format === 'bjerring' ? Array.from(draftSetup.selectedPlayerIds) : state.roster.map(p=>p.id);
+}
+function computePoolCounts(ids){
+  const counts = {};
+  draftSetup.poolNames.forEach(pn => { counts[pn] = 0; });
+  ids.forEach(id => {
+    const pn = draftSetup.playerPools[id];
+    if(pn && counts[pn] !== undefined) counts[pn]++;
+  });
+  return counts;
+}
+function refreshPoolCounts(){
+  const counts = computePoolCounts(poolMemberIdsForCurrentView());
+  document.querySelectorAll('[data-pool-count]').forEach(el => {
+    const pn = el.getAttribute('data-pool-count');
+    el.textContent = `(${counts[pn] || 0})`;
+  });
+}
+
 // New roster members default to selected (once); removed members drop out.
 // A player the coach explicitly unchecked stays unchecked across re-renders,
 // because "seen" tracks who we've already applied a default to.
@@ -1162,9 +1184,10 @@ function viewSetup(){
       </label>`).join('');
 
     const selectedIds = Array.from(draftSetup.selectedPlayerIds);
+    const bjPoolCounts = computePoolCounts(selectedIds);
 
     const poolTags = draftSetup.poolNames.map((pn,i) => `
-      <span class="pool-tag">${esc(pn)}${draftSetup.poolNames.length>2 ? `<button type="button" data-remove-pool="${i}" title="Remove pool">×</button>` : ''}</span>
+      <span class="pool-tag">${esc(pn)} <span class="pool-count" data-pool-count="${esc(pn)}">(${bjPoolCounts[pn]||0})</span>${draftSetup.poolNames.length>2 ? `<button type="button" data-remove-pool="${i}" title="Remove pool">×</button>` : ''}</span>
     `).join('');
 
     const poolAssignRows = selectedIds.map(id => {
@@ -1256,8 +1279,9 @@ function viewSetup(){
         </label>`).join('');
       entrantPicker = `<div class="field"><label>Select players</label>${checks || '<p class="hint">Add players on the Roster tab first.</p>'}</div>`;
     } else if(draftSetup.entrantMode === 'pools'){
+      const rrPoolCounts = computePoolCounts(state.roster.map(p=>p.id));
       const poolTags = draftSetup.poolNames.map((pn,i) => `
-        <span class="pool-tag">${esc(pn)}${draftSetup.poolNames.length>2 ? `<button type="button" data-remove-pool="${i}" title="Remove pool">×</button>` : ''}</span>
+        <span class="pool-tag">${esc(pn)} <span class="pool-count" data-pool-count="${esc(pn)}">(${rrPoolCounts[pn]||0})</span>${draftSetup.poolNames.length>2 ? `<button type="button" data-remove-pool="${i}" title="Remove pool">×</button>` : ''}</span>
       `).join('');
       const poolAssignRows = state.roster.map(p => {
         const current = draftSetup.playerPools[p.id] || '';
@@ -1825,6 +1849,7 @@ function wireEvents(){
     sel.addEventListener('change', () => {
       const id = sel.getAttribute('data-pool-assign');
       if(sel.value) draftSetup.playerPools[id] = sel.value; else delete draftSetup.playerPools[id];
+      refreshPoolCounts();
     });
   });
   document.querySelectorAll('[data-en-check]').forEach(cb => {
