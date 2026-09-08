@@ -714,10 +714,22 @@ function bjerringSubmitRound(t, scores){
   t.currentSitOut = built.sitOutPlayerIds;
 }
 
-function bjerringStandingsSorted(t){
-  return Object.entries(t.standings)
+function bjerringStandingsSorted(t, poolIds){
+  const all = Object.entries(t.standings)
     .map(function(e){ return Object.assign({id: e[0]}, e[1]); })
     .sort((a,b) => b.wins - a.wins || b.diff - a.diff);
+  if(!poolIds) return all;
+  const idSet = new Set(poolIds);
+  return all.filter(r => idSet.has(r.id));
+}
+// Renders "<pool name> standings" for each pool, filtered to that pool's
+// members. Returns '' when the tournament isn't using pools.
+function bjerringPoolStandingsHtml(t){
+  if(!t.pools) return '';
+  return Object.keys(t.pools).map(pn => `
+    <h3 style="margin-top:24px; font-size:15px; color:var(--chalk-dim);">${esc(pn)} standings</h3>
+    ${standingsTableHtml(bjerringStandingsSorted(t, t.pools[pn]).map(r=>({name:r.name,wins:r.wins,losses:r.losses,diff:r.diff})), 'Player')}
+  `).join('');
 }
 
 /* ---- Round Robin ---- */
@@ -1547,8 +1559,9 @@ function viewBjerringActive(t){
     ${sitOutNames.length ? `<div class="sitout-note">Sitting out this round: ${esc(sitOutNames.join(', '))}</div>` : ''}
     ${matches}
     <button class="btn btn-primary btn-block" id="submitBjerringRound" style="margin-top:8px;">Submit results and begin the next round</button>
-    <h3 style="margin-top:36px; font-size:17px;">Standings</h3>
+    <h3 style="margin-top:36px; font-size:17px;">${t.pools ? 'Overall standings' : 'Standings'}</h3>
     ${standingsTableHtml(bjerringStandingsSorted(t).map(r=>({name:r.name,wins:r.wins,losses:r.losses,diff:r.diff})), 'Player')}
+    ${bjerringPoolStandingsHtml(t)}
     <h3 style="margin-top:36px; font-size:17px;">Partner matrix</h3>
     <p class="hint" style="margin-bottom:4px;">Point differential when each pair has played as teammates. Blank means they haven't partnered yet.</p>
     ${bjerringMatrixHtml(t)}
@@ -2226,10 +2239,15 @@ function buildPrintBjerring(t){
     }
   });
   const bjPrintSub = t.pools ? `${Object.keys(t.pools).join(' + ')} · ${t.players.length} players · through round ${t.round-1}` : `Team size ${t.teamSize} · ${t.players.length} players · through round ${t.round-1}`;
+  const poolStandingsPrint = t.pools ? Object.keys(t.pools).map(pn => `
+    <div class="print-section-title">${esc(pn)} standings</div>
+    ${printStandingsTable(bjerringStandingsSorted(t, t.pools[pn]).map(r => ({name:r.name, wins:r.wins, losses:r.losses, diff:r.diff})), 'Player')}
+  `).join('') : '';
   return `
     ${printHeaderHtml('Bjerring Tournament', bjPrintSub)}
-    <div class="print-section-title">Standings</div>
+    <div class="print-section-title">${t.pools ? 'Overall standings' : 'Standings'}</div>
     ${printStandingsTable(standings, 'Player')}
+    ${poolStandingsPrint}
     <div class="print-section-title">Partner matrix</div>
     ${printMatrixTable(t)}
     ${rounds}
