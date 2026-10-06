@@ -566,12 +566,19 @@
   }
   .stat-strip{
     margin-top:22px;
-    display:flex;
-    gap:28px;
-    flex-wrap:wrap;
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:12px;
   }
   .stat-strip .stat{
     font-family:'JetBrains Mono',monospace;
+    padding:14px 16px;
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    background:rgba(255,255,255,0.02);
+  }
+  @media (max-width:560px){
+    .stat-strip{grid-template-columns:1fr;}
   }
   .stat-strip .stat .n{
     font-size:20px;
