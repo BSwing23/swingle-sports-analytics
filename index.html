@@ -657,13 +657,15 @@
   .founder-grid{
     margin-top:52px;
     display:grid;
-    grid-template-columns:0.4fr 1fr;
-    gap:56px;
+    grid-template-columns:auto 1fr;
+    gap:32px;
+    align-items:start;
   }
-  @media (max-width:860px){
-    .founder-grid{grid-template-columns:1fr;}
+  @media (max-width:560px){
+    .founder-grid{grid-template-columns:1fr; gap:20px;}
   }
   .founder-portrait{
+    width:80px;
     aspect-ratio:3/4;
     border-radius:10px;
     border:1px solid var(--line-strong);
@@ -687,6 +689,7 @@
     background:linear-gradient(to top, rgba(10,24,38,0.85) 0%, rgba(10,24,38,0.15) 45%, transparent 70%);
   }
   .founder-portrait .fp-label{
+    display:none;
     position:relative;
     z-index:1;
     padding:22px;
